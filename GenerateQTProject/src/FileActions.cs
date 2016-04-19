@@ -35,7 +35,7 @@ namespace GenerateQTProject
         /// <summary>
         /// Directory where the uProGen executable is located.
         /// </summary>
-        public static string PROGRAM_DIR { get; } = AppDomain.CurrentDomain.BaseDirectory;
+        public static string PROGRAM_DIR { get { return AppDomain.CurrentDomain.BaseDirectory; } }
 
         /// <summary>
         /// Opens configuration file in default text editor.
