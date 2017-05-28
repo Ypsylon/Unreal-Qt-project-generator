@@ -24,6 +24,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Microsoft.Win32;
+using System.Diagnostics;
 
 namespace GenerateQTProject
 {
@@ -32,32 +34,47 @@ namespace GenerateQTProject
     /// </summary>
     class Generator
     {
-        private const string ENTER_QUIT_MSG = " - Press Enter to quit...";
-
         /// <summary>
         /// Generates the Qt project file
         /// </summary>
-        /// <param name="projData">Reference to project parser</param>
+        /// <param name="projectDir">Directory which contains sln and uproject file</param>
+        /// <param name="projectName">Name of your UE project</param>
         /// <returns>success</returns>
-        public static void GenerateProFile(ProjectFileParser projData)
+        public static bool GenerateProFile(string projectDir, string projectName)
         {
             /* These lists will store all source and header files 
             which are found in the source directory of your project */
+
             List<string> SourceFilePaths;
             List<string> HeaderFilePaths;
 
-            ConsoleActions.PrintHeader();
+            if (projectName == "")
+            {
+                Console.WriteLine("\nERROR: No .sln file found.\n");
+                return false;
+            }
+            else if (!File.Exists(projectDir + "\\Intermediate\\ProjectFiles\\" + projectName + ".vcxproj"))
+            {
+                Console.WriteLine("\nERROR: .vcxproj file not found, name doesn't match .sln file name.\n");
+                return false;
+            }
+            else if (!File.Exists(projectDir + "\\" + projectName + ".uproject"))
+            {
+                Console.WriteLine("\nERROR: .uproject file not found, name doesn't match .sln file name.\n");
+                return false;
+            }
+            else
+            {
+                Console.Clear();
+                ConsoleActions.PrintHeader();
 
-            Console.WriteLine("Generating .pro file...");
-            SourceFilePaths = new List<string>();
-            HeaderFilePaths = new List<string>();
+                Console.WriteLine("Generating .pro file...");
+                SourceFilePaths = new List<string>();
+                HeaderFilePaths = new List<string>();
 
-            string sourcePath = projData.projectPath + "Source";
+                FileActions.ScanDirectoryForFiles(SourceFilePaths, HeaderFilePaths, projectDir + "\\Source\\" + projectName, projectName);
+            }
 
-            if (!Directory.Exists(sourcePath))
-                Errors.ErrorExit(Errors.SOURCE_PATH_NOT_FOUND);
-
-            FileActions.ScanDirectoryForFiles(SourceFilePaths, HeaderFilePaths, sourcePath, projData.projectName);
 
             // Add some useful configuration options and include all UE defines
             string qtProFile = "TEMPLATE = app\n" +
@@ -94,88 +111,201 @@ namespace GenerateQTProject
             "include(includes.pri)";
 
             // Add build.cs as additional file
-            if (File.Exists(sourcePath + "\\" + projData.projectName + "\\" + projData.projectName + ".Build.cs"))
+            if (File.Exists(projectDir + "\\Source\\" + projectName + "\\" + projectName + ".Build.cs"))
             {
                 qtProFile = qtProFile + "\n\n" +
                 "DISTFILES += \\\n\t" +
-                "../../Source/" + projData.projectName + "/" + projData.projectName + ".Build.cs";
+                "../../Source/" + projectName + "/" + projectName + ".Build.cs";
+
+                // Add targets as additional files
+                string[] files = Directory.GetFiles(projectDir + "\\Source\\");
+                foreach (string file in files)
+                {
+                    if (file.EndsWith(".Target.cs"))
+                    {
+                        qtProFile = qtProFile + "\n\n" +
+                        "DISTFILES += \\\n\t" +
+                        "../../Source/" + Path.GetFileName(file);
+                    }
+                }
             }
 
             try
             {
-                File.WriteAllText(projData.projectPath + "Intermediate\\ProjectFiles\\" + projData.projectName + ".pro", qtProFile);
+                File.WriteAllText(projectDir + "\\Intermediate\\ProjectFiles\\" + projectName + ".pro", qtProFile);
+                return true;
             }
-            catch
+            catch (Exception ex)
             {
-                Errors.ErrorExit(Errors.PROJECT_FILE_WRITE_FAILED);
+                Console.WriteLine("\nError during .pro file creation.\n");
+                Console.WriteLine(ex.StackTrace);
+                Console.Write(" - Press Enter to quit...");
+                Console.ReadLine();
+                Environment.Exit(4);
+                return false;
             }
         }
 
         /// <summary>
         /// Generates defines.pri and includes.pri files (with data from YourProject.vcxproj)
         /// </summary>
-        /// <param name="projData">Reference to project parser</param>
+        /// <param name="projectDir">Directory which contains sln and uproject file</param>
+        /// <param name="projectName">Name of your UE project</param>
         /// <returns>success</returns>
-        public static void GenerateDefinesAndInclude(ProjectFileParser projData)
+        public static bool GenerateDefinesAndInclude(string projectDir, string projectName)
         {
-            Console.WriteLine("Generating defines.pri and includes.pri...\n");
+            string vcxText = "";
+            try
+            {
+                vcxText = File.ReadAllText(projectDir + "\\Intermediate\\ProjectFiles\\" + projectName + ".vcxproj");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("\nERROR: vcxproj file couldn't be read.\n");
+                Console.WriteLine(ex.StackTrace);
+                Console.Write(" - Press Enter to quit...");
+                Console.ReadLine();
+                Environment.Exit(5);
+                return false;
+            }
+
+            // Read defines from vcxproj file
+            string definesString = vcxText;
+            definesString = definesString.Substring(definesString.IndexOf("<NMakePreprocessorDefinitions>$(NMakePreprocessorDefinitions);") + "<NMakePreprocessorDefinitions>$(NMakePreprocessorDefinitions);".Length);
+            definesString = definesString.Remove(definesString.LastIndexOf("</NMakePreprocessorDefinitions>"));
+
+            // Read includes from vcxproj file
+            string includesString = vcxText;
+            includesString = includesString.Substring(includesString.IndexOf("<NMakeIncludeSearchPath>$(NMakeIncludeSearchPath);") + "<NMakeIncludeSearchPath>$(NMakeIncludeSearchPath);".Length);
+            includesString = includesString.Remove(includesString.LastIndexOf("</NMakeIncludeSearchPath>"));
+
+            // Convert defines to Qt format
+            definesString = "DEFINES += \"" + definesString;
+            definesString = definesString.Replace(";", "\"\nDEFINES += \"");
+            definesString = definesString + "\"";
+
+            // Convert includes to Qt format
+            includesString = "INCLUDEPATH += \"" + includesString;
+            includesString = includesString.Replace(";", "\"\nINCLUDEPATH += \"");
+            includesString = includesString + "\"";
+
             // Write files
             try
             {
-                File.WriteAllText(projData.projectPath + "Intermediate\\ProjectFiles\\defines.pri", projData.GetEngineDefines());
-                File.WriteAllText(projData.projectPath + "Intermediate\\ProjectFiles\\includes.pri", projData.GetEngineIncludes());
-            }
-            catch
+                File.WriteAllText(projectDir + "\\Intermediate\\ProjectFiles\\defines.pri", definesString);
+                File.WriteAllText(projectDir + "\\Intermediate\\ProjectFiles\\includes.pri", includesString);
+            } catch(Exception ex)
             {
-                Errors.ErrorExit(Errors.DEFINES_AND_INCLUDES_WRITE_FAILED);
+                Console.WriteLine("\nERROR: Couldn't write defines and include files.\n");
+                Console.WriteLine(ex.StackTrace);
+                Console.Write(" - Press Enter to quit...");
+                Console.ReadLine();
+                Environment.Exit(6);
+                return false;
             }
+                
+            return true;
         }
 
 
         /// <summary>
         /// This method will generate and apply a modified qt.pro.user file, which contains build presets for UE4
         /// </summary>
-        /// <param name="projData">Reference to project parser</param>
+        /// <param name="projectDir">Directory which contains sln and uproject file</param>
+        /// <param name="projectName">Name of your UE project</param>
         /// <returns>success</returns>
-        public static void GenerateQtBuildPreset(ProjectFileParser projData)
+        public static bool GenerateQtBuildPreset(string projectDir, string projectName)
         {
-            // Helper variable which stores the retrieved Unreal Engine Version (currently not needed)
-            //string UnrealVersion;
+            // Helper variable which stores the retrieved Unreal Engine Version
+            string UnrealVersion;
 
             // These variables are used to replace parts of the qtBuildPreset.xml file to match your project and Unreal Engine installation
             string UPROJ_FILE,
             UNREAL_PATH,
             PROJECT_DIR,
-            PROJECT_NAME,
-            QT_ENV_ID,
-            QT_CONF_ID;
-
-            QT_ENV_ID = Configuration.data.qtCreatorEnvironmentId;
-            QT_CONF_ID = Configuration.data.qtCreatorUnrealConfigurationId;
+            PROJECT_NAME;
 
             // Set project name
-            PROJECT_NAME = projData.projectName;
+            PROJECT_NAME = projectName;
 
             // Set project directory
-            PROJECT_DIR = projData.projectPath;
+            PROJECT_DIR = projectDir;
 
             // Set project file path
-            UPROJ_FILE = projData.uprojectFilePath;
+            UPROJ_FILE = projectDir + "\\" + projectName + ".uproject";
+            if (!File.Exists(UPROJ_FILE))
+            {
+                Console.WriteLine("\nERROR: .uproject file not found.\n");
+                return false;
+            }
 
-            // set engine path
-            UNREAL_PATH = projData.GetEnginePath();
+            // Retrieve engine version from .uproject file
+            UnrealVersion = File.ReadAllText(UPROJ_FILE);
+            UnrealVersion = UnrealVersion.Substring(UnrealVersion.IndexOf("\"EngineAssociation\": \"") + "\"EngineAssociation\": \"".Length);
+            UnrealVersion = UnrealVersion.Remove(UnrealVersion.IndexOf("\","));
+
+            // Retrieve Unreal Engine directory (try to retrieve from stored value)
+            string path = FileActions.getUnrealPath();
+            if (FileActions.getUnrealPath() == "") // no value stored yet
+            {
+                bool success = false;
+
+                do
+                {
+                    Console.WriteLine("\nUnreal Engine 4 installation not found, please enter Unreal Engine 4 base directory (that one with the 4.x folders in it): ");
+                    UNREAL_PATH = Console.ReadLine();
+                    UNREAL_PATH = UNREAL_PATH.Replace("\"", "");
+
+                    if (!UNREAL_PATH.EndsWith("\\"))
+                        UNREAL_PATH = UNREAL_PATH + "\\";
+
+                    if (!Directory.Exists(UNREAL_PATH))
+                    {
+                        Console.WriteLine("Invalid Directory\n");
+                    }
+                    else
+                    {
+                        foreach (string dir in Directory.GetDirectories(UNREAL_PATH))
+                        {
+                            if (dir.Substring(dir.LastIndexOf("\\")+1).StartsWith("4."))
+                            {
+                                success = true;
+                                break;
+                            }
+                        }
+
+                        if (!success)
+                            Console.WriteLine("Directory contains no Unreal Engine installations.\n");
+                    }
+
+                } while (!success);
+
+                // store path for future use
+                FileActions.storeUnrealPath(UNREAL_PATH);
+
+                Console.WriteLine();
+            }
+            else
+            {
+                UNREAL_PATH = path;
+            }
+
+            // If we are using 4.15 naming changed to UE_version so we need to update this one too
+            if (UnrealVersion == "4.15") UnrealVersion = "UE_" + UnrealVersion;
+
+            // Add version to path --> complete path
+            UNREAL_PATH += UnrealVersion;
+
+            if (!Directory.Exists(UNREAL_PATH))
+            {
+                Console.WriteLine("\nERROR: Your project was generated with Unreal Engine " + UnrealVersion + ", which apparently seems not to be installed at the moment (path: " + UNREAL_PATH + " doesn't exist.)\n");
+                Console.Write(" - Press Enter to quit...");
+                Console.ReadLine();
+                Environment.Exit(4);
+            }
 
             // Load user file preset
-            String qtBuildPreset = "";
-            try
-            {
-                qtBuildPreset = File.ReadAllText(FileActions.PROGRAM_DIR + "qtBuildPreset.xml");
-            }
-            catch
-            {
-                Errors.ErrorExit(Errors.BUILD_PRESET_READ_FAILED);
-            }
-            
+            String qtBuildPreset = File.ReadAllText("qtBuildPreset.xml");
 
             // Replace preset variables with actual values
             qtBuildPreset = qtBuildPreset.Replace("$PROJECT_NAME", PROJECT_NAME);
@@ -183,26 +313,68 @@ namespace GenerateQTProject
             qtBuildPreset = qtBuildPreset.Replace("$UPROJ_FILE", UPROJ_FILE);
             qtBuildPreset = qtBuildPreset.Replace("$UNREAL_PATH", UNREAL_PATH);
 
-            qtBuildPreset = qtBuildPreset.Replace("$QT_ENV_ID", QT_ENV_ID);
-            qtBuildPreset = qtBuildPreset.Replace("$QT_CONF_ID", QT_CONF_ID);
+            Console.WriteLine("Before proceeding, make sure that QT Creator is closed and that .pro files are associated with it.\n");
+            Console.WriteLine(" - Press Enter to proceed...");
+            Console.ReadLine();
 
-            // remove -rocket for custom engine builds
-            if (!projData.IsLauncherBuild())
+            Console.WriteLine("This program will now launch Qt Creator.\n"
+            + "When you are asked to choose a build kit, please select your previously generated \"Unreal Engine 4\" kit and hit the configure project button.");
+            Console.WriteLine("When you are done, close Qt Creator. It will generate a user file which will then be modified by this program.\n");
+            Console.WriteLine("When you are ready,  - Press enter to proceed...");
+            Console.ReadLine();
+
+            // Launch Qt Creator in order to let it generate the user file
+            Process qtCreatorProcess = Process.Start(projectDir + "\\Intermediate\\ProjectFiles\\" + projectName + ".pro");
+            Console.WriteLine("QtCreator launched...");
+            qtCreatorProcess.WaitForExit();
+
+            Console.WriteLine("QtCreator closed...\n");
+
+            Console.Clear();
+            ConsoleActions.PrintHeader();
+
+
+            Console.WriteLine("Retrieving .pro.user file...");
+
+            if (!File.Exists(projectDir + "\\Intermediate\\ProjectFiles\\" + projectName + ".pro.user"))
             {
-                qtBuildPreset = qtBuildPreset.Replace("-rocket", "");
+                Console.WriteLine("ERROR: No .pro.user file found. ");
+                return false;
             }
+
+            // Load user file
+            string currentQTProFile = File.ReadAllText(projectDir + "\\Intermediate\\ProjectFiles\\" + projectName + ".pro.user");
+            string headerPart, footerPart;
+
+            /*     
+               IMPORTANT: The following part is a hacky solution, if Qt changes anything in the layout of the proj.pro.user file this may break (I think that proj.pro.user file is not intended to be modified by the user)
+               But since this file seems to be (?) the only place where QtCreator stores build presets and launch targets (debug game, development editor, shipping, etc...) this is probably (?) the only option.
+            */
+
+            // Retrieve the parts not concerning build configurations (because Qt Creator has some ids in there which mustn't be changed)
+            headerPart = currentQTProFile.Substring(0, currentQTProFile.IndexOf("<value type=\"int\" key=\"ProjectExplorer.Target.ActiveBuildConfiguration\">"));
+            footerPart = currentQTProFile.Remove(0, currentQTProFile.IndexOf("<variable>ProjectExplorer.Project.TargetCount</variable>") - 1);
+
+            // Combine parts to a complete but modified user file
+            qtBuildPreset = headerPart + qtBuildPreset + "\n" + footerPart;
 
             // Write new user file
             try
             {
-                File.WriteAllText(projData.projectPath + "Intermediate\\ProjectFiles\\" + projData.projectName + ".pro.user", qtBuildPreset);
+                File.WriteAllText(projectDir + "\\Intermediate\\ProjectFiles\\" + projectName + ".pro.user", qtBuildPreset);
             }
-            catch
+            catch (Exception ex)
             {
-                Errors.ErrorExit(Errors.QT_PRO_USERFILE_WRITE_FAILED);
+                Console.WriteLine("\nError during pro.user file creation.");
+                Console.WriteLine(ex.StackTrace);
+                Console.Write(" - Press Enter to quit...");
+                Console.ReadLine();
+                Environment.Exit(3);
             }
 
-            Console.WriteLine("User file written successfully.");
+            Console.WriteLine("User file modification successful");
+
+            return true;
         }
     }
 }
